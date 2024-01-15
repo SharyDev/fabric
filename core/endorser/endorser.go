@@ -365,115 +365,140 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 	}
 	return pResp, nil
 }
-
+//Change Shahroz
 func (e *Endorser) ProcessProposalSuccessfullyOrError(up *UnpackedProposal) (*pb.ProposalResponse, error) {
-	txParams := &ccprovider.TransactionParams{
-		ChannelID:  up.ChannelHeader.ChannelId,
-		TxID:       up.ChannelHeader.TxId,
-		SignedProp: up.SignedProposal,
-		Proposal:   up.Proposal,
-	}
+    txParams := &ccprovider.TransactionParams{
+        ChannelID:  up.ChannelHeader.ChannelId,
+        TxID:       up.ChannelHeader.TxId,
+        SignedProp: up.SignedProposal,
+        Proposal:   up.Proposal,
+    }
 
-	logger := decorateLogger(endorserLogger, txParams)
+    logger := decorateLogger(endorserLogger, txParams)
 
-	if acquireTxSimulator(up.ChannelHeader.ChannelId, up.ChaincodeName) {
-		txSim, err := e.Support.GetTxSimulator(up.ChannelID(), up.TxID())
-		if err != nil {
-			return nil, err
-		}
+    if acquireTxSimulator(up.ChannelHeader.ChannelId, up.ChaincodeName) {
+        txSim, err := e.Support.GetTxSimulator(up.ChannelID(), up.TxID())
+        if err != nil {
+            return nil, err
+        }
 
-		// txsim acquires a shared lock on the stateDB. As this would impact the block commits (i.e., commit
-		// of valid write-sets to the stateDB), we must release the lock as early as possible.
-		// Hence, this txsim object is closed in simulateProposal() as soon as the tx is simulated and
-		// rwset is collected before gossip dissemination if required for privateData. For safety, we
-		// add the following defer statement and is useful when an error occur. Note that calling
-		// txsim.Done() more than once does not cause any issue. If the txsim is already
-		// released, the following txsim.Done() simply returns.
-		defer txSim.Done()
+        // txsim acquires a shared lock on the stateDB. As this would impact the block commits (i.e., commit
+        // of valid write-sets to the stateDB), we must release the lock as early as possible.
+        // Hence, this txsim object is closed in simulateProposal() as soon as the tx is simulated and
+        // rwset is collected before gossip dissemination if required for privateData. For safety, we
+        // add the following defer statement and is useful when an error occur. Note that calling
+        // txsim.Done() more than once does not cause any issue. If the txsim is already
+        // released, the following txsim.Done() simply returns.
+        defer txSim.Done()
 
-		hqe, err := e.Support.GetHistoryQueryExecutor(up.ChannelID())
-		if err != nil {
-			return nil, err
-		}
+        hqe, err := e.Support.GetHistoryQueryExecutor(up.ChannelID())
+        if err != nil {
+            return nil, err
+        }
 
-		txParams.TXSimulator = txSim
-		txParams.HistoryQueryExecutor = hqe
-	}
+        txParams.TXSimulator = txSim
+        txParams.HistoryQueryExecutor = hqe
+    }
 
-	cdLedger, err := e.Support.ChaincodeEndorsementInfo(up.ChannelID(), up.ChaincodeName, txParams.TXSimulator)
-	if err != nil {
-		return nil, errors.WithMessagef(err, "make sure the chaincode %s has been successfully defined on channel %s and try again", up.ChaincodeName, up.ChannelID())
-	}
+    cdLedger, err := e.Support.ChaincodeEndorsementInfo(up.ChannelID(), up.ChaincodeName, txParams.TXSimulator)
+    if err != nil {
+        return nil, errors.WithMessagef(err, "make sure the chaincode %s has been successfully defined on channel %s and try again", up.ChaincodeName, up.ChannelID())
+    }
 
-	// 1 -- simulate
-	res, simulationResult, ccevent, ccInterest, err := e.simulateProposal(txParams, up.ChaincodeName, up.Input)
-	if err != nil {
-		return nil, errors.WithMessage(err, "error in simulation")
-	}
+    // 1 -- simulate
+    res, simulationResult, ccevent, ccInterest, err := e.simulateProposal(txParams, up.ChaincodeName, up.Input)
+    if err != nil {
+        return nil, errors.WithMessage(err, "error in simulation")
+    }
 
-	cceventBytes, err := CreateCCEventBytes(ccevent)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal chaincode event")
-	}
+    cceventBytes, err := CreateCCEventBytes(ccevent)
+    if err != nil {
+        return nil, errors.Wrap(err, "failed to marshal chaincode event")
+    }
 
-	prpBytes, err := protoutil.GetBytesProposalResponsePayload(up.ProposalHash, res, simulationResult, cceventBytes, &pb.ChaincodeID{
-		Name:    up.ChaincodeName,
-		Version: cdLedger.Version,
-	})
-	if err != nil {
-		logger.Warning("Failed marshaling the proposal response payload to bytes", err)
-		return nil, errors.WithMessage(err, "failed to create the proposal response")
-	}
+    prpBytes, err := protoutil.GetBytesProposalResponsePayload(up.ProposalHash, res, simulationResult, cceventBytes, &pb.ChaincodeID{
+        Name:    up.ChaincodeName,
+        Version: cdLedger.Version,
+    })
+    if err != nil {
+        logger.Warning("Failed marshaling the proposal response payload to bytes", err)
+        return nil, errors.WithMessage(err, "failed to create the proposal response")
+    }
 
-	// if error, capture endorsement failure metric
-	meterLabels := []string{
-		"channel", up.ChannelID(),
-		"chaincode", up.ChaincodeName,
-	}
+    // if error, capture endorsement failure metric
+    meterLabels := []string{
+        "channel", up.ChannelID(),
+        "chaincode", up.ChaincodeName,
+    }
 
-	switch {
-	case res.Status >= shim.ERROR:
-		return &pb.ProposalResponse{
-			Response: res,
-			Payload:  prpBytes,
-			Interest: ccInterest,
-		}, nil
-	case up.ChannelID() == "":
-		// Chaincode invocations without a channel ID is a broken concept
-		// that should be removed in the future.  For now, return unendorsed
-		// success.
-		return &pb.ProposalResponse{
-			Response: res,
-		}, nil
-	case res.Status >= shim.ERRORTHRESHOLD:
-		meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(true))
-		e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
-		logger.Debugf("chaincode error %d", res.Status)
-		return &pb.ProposalResponse{
-			Response: res,
-		}, nil
-	}
+    switch {
+    case res.Status >= shim.ERROR:
+        return &pb.ProposalResponse{
+            Response: res,
+            Payload:  prpBytes,
+            Interest: ccInterest,
+        }, nil
+    case up.ChannelID() == "":
+        // Chaincode invocations without a channel ID is a broken concept
+        // that should be removed in the future.  For now, return unendorsed
+        // success.
+        return &pb.ProposalResponse{
+            Response: res,
+        }, nil
+    case res.Status >= shim.ERRORTHRESHOLD:
+        meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(true))
+        e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
+        logger.Debugf("chaincode error %d", res.Status)
+        return &pb.ProposalResponse{
+            Response: res,
+        }, nil
+    }
 
-	escc := cdLedger.EndorsementPlugin
+    // Count the number of valid endorsements
+    var validEndorsements int
+    for _, endorserSig := range simulationResult.EndorserSignatures {
+        if endorserSig != nil && endorserSig.Endorser != nil && endorserSig.Signature != nil {
+            validEndorsements++
+        }
+    }
 
-	logger.Debugf("escc for chaincode %s is %s", up.ChaincodeName, escc)
+    // Set your required endorsement threshold (4 in this case)
+    requiredEndorsements := 4
 
-	// Note, mPrpBytes is the same as prpBytes by default endorsement plugin, but others could change it.
-	endorsement, mPrpBytes, err := e.Support.EndorseWithPlugin(escc, up.ChannelID(), prpBytes, up.SignedProposal)
-	if err != nil {
-		meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(false))
-		e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
-		return nil, errors.WithMessage(err, "endorsing with plugin failed")
-	}
+    if validEndorsements < requiredEndorsements {
+        // If the required number of endorsements is not met, return an error
+        return &pb.ProposalResponse{
+            Response: &pb.Response{
+                Status:  shim.ERRORTHRESHOLD,
+                Message: "Insufficient valid endorsements",
+            },
+        }, nil
+    }
 
-	return &pb.ProposalResponse{
-		Version:     1,
-		Endorsement: endorsement,
-		Payload:     mPrpBytes,
-		Response:    res,
-		Interest:    ccInterest,
-	}, nil
+    escc := cdLedger.EndorsementPlugin
+
+    logger.Debugf("escc for chaincode %s is %s", up.ChaincodeName, escc)
+
+    // Note, mPrpBytes is the same as prpBytes by default endorsement plugin, but others could change it.
+    endorsement, mPrpBytes, err := e.Support.EndorseWithPlugin(escc, up.ChannelID(), prpBytes, up.SignedProposal)
+    if err != nil {
+        meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(false))
+        e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
+        return nil, errors.WithMessage(err, "endorsing with plugin failed")
+    }
+
+    // Proceed with committing the transaction to the ledger
+    // ... (commit logic)
+
+    return &pb.ProposalResponse{
+        Version:     1,
+        Endorsement: endorsement,
+        Payload:     mPrpBytes,
+        Response:    res,
+        Interest:    ccInterest,
+    }, nil
 }
+
 
 // Using the simulation results, build the ChaincodeInterest structure that the client can pass to the discovery service
 // to get the correct endorsement policy for the chaincode(s) and any collections encountered.
